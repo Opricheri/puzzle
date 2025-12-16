@@ -9,7 +9,7 @@
 <body>
     <div id="myBallSelector" style="
             position: absolute; 
-            bottom: 50px; 
+            bottom: 20px; 
             left: 50%; 
             transform: translateX(-50%);
             display: flex; 
@@ -30,7 +30,20 @@
 
         const settings = {
             properties: {
-                scoreVal: 1
+                scoreVal: 10,
+                myBallType: 'purple',
+
+                enemyProps: {
+                    maxHp: 1200, // 体力
+                    enemyDuration: 60, // 制限時間
+                },
+
+                feverProps: {
+                    feverMultiplier: 3, // 倍率
+                    feverDuration: 5000, // 秒数
+                    feverThreshold: 30, // 必要ボール数
+                    feverTimeDuration: 3, // 敵の時間が延びる（秒数）
+                }
             }
         }
         const data = settings.properties;
@@ -81,6 +94,10 @@
                 let last = selectedArray[selectedArray.length - 1];
 
                 this.group.children.iterate(obj => {
+                    if (obj.isJammer && !this.scene.purpleMode) return;
+                    if (last?.isJammer && !this.scene.purpleMode) return;
+
+
                     const body = obj.body;
                     const x = body.position.x;
                     const y = body.position.y;
@@ -100,6 +117,12 @@
 
                     if (this.selected.size === 0) {
                         this.selected.add(obj);
+
+                        const pitch = 0.9 + this.selected.size * 0.02;
+                        this.scene.sound.play('puni', {
+                            rate: Phaser.Math.Clamp(pitch, 0.9, 1.2)
+                        });
+
                         return;
                     }
 
@@ -109,8 +132,20 @@
                     const distance = Math.sqrt(dx * dx + dy * dy);
                     const threshold = (obj.displayWidth + last.displayWidth) / 2 + this.offset;
 
-                    if (obj.type === last.type && distance <= threshold) {
+                    if (
+                        distance <= threshold &&
+                        (
+                            this.scene.purpleMode ||
+                            obj.type === last.type
+                        )
+                    ) {
                         this.selected.add(obj);
+
+                        const pitch = 0.9 + this.selected.size * 0.02;
+                        this.scene.sound.play('puni', {
+                            rate: Phaser.Math.Clamp(pitch, 0.9, 1.2)
+                        });
+
                     }
                 });
 
@@ -147,10 +182,12 @@
 
         class Ball extends Phaser.Physics.Matter.Image {
             constructor(scene, x, y, type, scale = 0.9) {
-                super(scene.matter.world, x, y, 'ball-' + type);
+                const textureKey = (type === 'jammer') ? 'item-oil' : 'ball-' + type;
+                super(scene.matter.world, x, y, textureKey);
                 scene.add.existing(this);
 
                 this.type = type;
+                this.isJammer = (type === 'jammer');
 
                 const baseRadius = this.width / 2; // 元画像サイズ
                 const radius = baseRadius * scale;
@@ -211,7 +248,7 @@
                 super(scene, 0, y, 'enemy');
 
                 this.scene = scene;
-                this.maxHp = 120;
+                this.maxHp = data.enemyProps.maxHp;
                 this.hp = this.maxHp;
 
                 this.laneStartX = 10;
@@ -267,13 +304,16 @@
                 this.load.image('church', './img/church.png');
                 this.load.image('item-bomb', './img/bomb.png');
                 this.load.image('item-clock', './img/clock.png');
+                this.load.image('item-oil', './img/oil.png');
+
+                this.load.audio('puni', './sounds/puni.wav');
             }
 
             create() {
                 this.gameOffsetY = UI_HEIGHT;
 
-                this.myBallType = 'red';
-                this.myBallMax = 3;
+                this.myBallType = data.myBallType;
+                this.myBallMax = 10;
                 this.myBallGaugeFull = false;
 
                 const width = 300;
@@ -359,6 +399,48 @@
                     this.updateMyBallIcon(); // アイコンも切り替え
                 });
 
+                // フィーバーUI
+
+                this.feverGaugeX = 80;
+                this.feverGaugeY = 470;
+                this.feverGaugeWidth = 160;
+                this.feverGaugeHeight = 12;
+
+                this.feverGaugeBg = this.add.rectangle(
+                    this.feverGaugeX,
+                    this.feverGaugeY,
+                    this.feverGaugeWidth,
+                    this.feverGaugeHeight,
+                    0x444444
+                ).setOrigin(0, 0.5);
+
+                this.feverGauge = this.add.rectangle(
+                    this.feverGaugeX,
+                    this.feverGaugeY,
+                    0,
+                    this.feverGaugeHeight,
+                    0xff5555
+                ).setOrigin(0, 0.5);
+
+                this.add.text(
+                    this.feverGaugeX - 50,
+                    this.feverGaugeY,
+                    'FEVER',
+                    { fontSize: '12px', color: '#ffffff' }
+                ).setOrigin(0, 0.5);
+
+                // フィーバー用フロー（上に被せる）
+                this.feverFlow = this.add.rectangle(
+                    this.feverGaugeX,
+                    this.feverGaugeY,
+                    30,
+                    this.feverGaugeHeight,
+                    0xffffff,
+                    0.35
+                ).setOrigin(0, 0.5);
+
+                this.feverFlow.visible = false;
+
 
 
 
@@ -387,6 +469,19 @@
                 this.chainGraphics.setDepth(10);
 
 
+                // Ballアビリティ系
+                this.purpleMode = false;
+
+
+
+                this.feverActive = false;
+                this.feverMultiplier = data.feverProps.feverMultiplier;
+                this.feverDuration = data.feverProps.feverDuration;
+                this.feverCounter = 0;
+                this.feverThreshold = data.feverProps.feverThreshold;
+                this.feverTimer = null;
+
+
                 this.dragSelect = new DragSelect(this, this.ballGroup);
                 this.dragSelect.graphics = this.chainGraphics;
 
@@ -394,16 +489,22 @@
                     const array = [...selected]; // Set → 配列
 
                     let last = array[array.length - 1];
+                    let lastPos = last ? { x: last.x, y: last.y } : null;
+                    const previousBallCount = array.length;
 
-                    if (array.length >= 6 && last) {
-                        const item = new BombItem(this, last.x, last.y);
-                        this.itemGroup.add(item);
+                    const damage = array.length * data.scoreVal * (this.feverActive ? this.feverMultiplier : 1);
+
+                    const destroyedCount = array.length;
+
+                    if (!this.feverActive) {
+                        this.feverCounter += destroyedCount;
+                        this.updateFeverGauge();
                     }
-
-                    const damage = array.length * data.scoreVal;
 
                     array.forEach((ball, i) => {
                         this.time.delayedCall(150 * i, () => {
+                            if (ball.isJammer && !this.purpleMode) return;
+
                             if (ball.type === this.myBallType) {
                                 myBallCount++;
                                 this.updateUI();
@@ -413,6 +514,10 @@
                             ball.destroy();
 
                             if (i === array.length - 1) {
+                                if (previousBallCount >= 6 && lastPos) {
+                                    const item = new BombItem(this, lastPos.x, lastPos.y);
+                                    this.itemGroup.add(item);
+                                }
                                 this.spawnBalls(array.length);
                             }
                         }, null, this);
@@ -446,7 +551,7 @@
 
                 this.enemyGroup = this.add.group();
 
-                const enemy = new Enemy(this, 75, 60); // Time Limit
+                const enemy = new Enemy(this, 75, data.enemyProps.enemyDuration); // Time Limit
                 this.enemyGroup.add(enemy);
 
 
@@ -479,6 +584,11 @@
                     const enemy = enemies[0]; // 今は1体だけ想定
                     enemy.update(time, delta);
 
+                    if (!this.jammerSpawned && enemy.hp < enemy.maxHp * 0.7) {
+                        this.spawnJammer(2);
+                        this.jammerSpawned = true;
+                    }
+
                     const remain = enemy.getRemainingTime();
                     this.timeLimitText.setText(
                         `${remain.toFixed()}`
@@ -495,6 +605,10 @@
                             this.scene.restart();
                         })
                     }
+                }
+
+                if (!this.feverActive && this.feverCounter >= this.feverThreshold) {
+                    this.startFever();
                 }
             }
 
@@ -513,6 +627,13 @@
 
                     const scale = i < uniqueBall ? uniqueSize : defaultScale;
                     const ball = new Ball(this, x, y, type, scale);
+
+                    ball.setInteractive();
+
+                    ball.on('pointerdown', () => {
+                        if (!this.purpleMode) return;
+                        this.destroySingleBall(ball);
+                    });
 
                     this.balls.push(ball);
                     this.ballGroup.add(ball);
@@ -570,6 +691,11 @@
                         deletedCount++;
                     }
                 });
+
+                if (!this.feverActive) {
+                    this.feverCounter += deletedCount;
+                    this.updateFeverGauge();
+                }
 
                 // --- ダメージ計算 ---
                 const damage = deletedCount * data.scoreVal;
@@ -736,12 +862,26 @@
                         this.itemGroup.add(timeItem);
                     },
                     orange: () => {
-                        score += 50;
-                        this.updateUI();
+                        this.selectByType('orange');
+
+                        const ds = this.dragSelect;
+                        const old = ds.triggerCount;
+                        ds.triggerCount = null;
+
+                        // pointerup を偽装
+                        ds.onReleaseCallback(ds.selected);
+
+                        ds.triggerCount = old;
+                        ds.selected.clear();
                     },
                     purple: () => {
-                        const enemy = this.enemyGroup.getChildren()[0];
-                        if (enemy) enemy.damage(20);
+                        this.purpleMode = true;
+
+                        this.cameras.main.flash(100, 180, 120, 255);
+
+                        this.time.delayedCall(3000, () => {
+                            this.purpleMode = false;
+                        })
                     }
                 };
 
@@ -753,6 +893,166 @@
 
                 this.myBallGaugeFull = false;
                 this.updateMyBallGauge();
+            }
+
+
+            destroySingleBall(ball) {
+                if (!ball.active) return;
+                if (ball.isJammer && !this.purpleMode) return;
+
+                // カウント系
+                if (!this.feverActive) {
+                    this.feverCounter += 1;
+                    this.updateFeverGauge();
+                }
+
+                if (ball.type === this.myBallType) {
+                    myBallCount++;
+                }
+
+                // スコア
+                const damage = data.scoreVal *
+                    (this.feverActive ? this.feverMultiplier : 1);
+
+                score += damage;
+                this.updateUI();
+
+                // 敵ダメージ
+                const enemy = this.enemyGroup.getChildren()[0];
+                if (enemy) enemy.damage(damage);
+
+                // 破壊
+                this.ballGroup.remove(ball, true, true);
+                ball.destroy();
+
+                // 補充
+                this.spawnBalls(1);
+            }
+
+
+            spawnJammer(count = 1) {
+                const wallThickness = this.wallThickness;
+                const offsetY = this.gameOffsetY;
+                const width = 300;
+
+                this.cameras.main.shake(100, 0.005);
+                this.sound.play('puni', { rate: 0.6 });
+
+                for (let i = 0; i < count; i++) {
+                    const x = Phaser.Math.Between(wallThickness + 25, width - wallThickness - 25);
+                    const y = Phaser.Math.Between(25 + offsetY, 80 + offsetY);
+
+                    const jammer = new Ball(this, x, y, 'jammer', 1.0);
+                    jammer.setTexture('item-oil');
+                    jammer.isJammer = true;
+
+                    jammer.setInteractive();
+                    jammer.on('pointerdown', () => {
+                        if (!this.purpleMode) return;
+                        this.destroySingleBall(jammer);
+                    });
+
+                    this.ballGroup.add(jammer);
+                }
+            }
+
+            // フィーバー
+            startFever() {
+                if (this.feverActive) return; // 二重発動防止（保険）
+
+                this.feverActive = true;
+                this.feverCounter = 0;
+                this.updateFeverGauge();
+
+                const enemy = this.enemyGroup.getChildren()[0];
+                if (enemy)
+                    enemy.duration += data.feverProps.feverTimeDuration;
+
+                // ゲージを満タンに
+                this.feverGauge.width = this.feverGaugeWidth;
+                this.feverGauge.setFillStyle(0xffdd55);
+
+                // フロー表示
+                this.feverFlow.visible = true;
+                this.feverFlow.x = this.feverGaugeX - 30;
+
+                // 既存Tween停止
+                this.tweens.killTweensOf(this.feverFlow);
+
+                // 横に流す
+                this.tweens.add({
+                    targets: this.feverFlow,
+                    x: this.feverGaugeX + this.feverGaugeWidth,
+                    duration: 600,
+                    repeat: -1,
+                    ease: 'Linear'
+                });
+
+
+                // 画面フラッシュ用オーバーレイ
+                const flash = this.add.rectangle(
+                    GAME_WIDTH / 2,
+                    GAME_HEIGHT / 2,
+                    GAME_WIDTH,
+                    GAME_HEIGHT,
+                    0xffffff,
+                    1
+                ).setDepth(1000);
+
+                this.tweens.add({
+                    targets: flash,
+                    alpha: 0,
+                    duration: 120,
+                    ease: 'Quad.Out',
+                    onComplete: () => flash.destroy()
+                });
+
+
+                // 既存Tweenを念のため停止
+                this.tweens.killTweensOf(this.feverGauge);
+
+                // 点滅演出
+                this.tweens.add({
+                    targets: this.feverGauge,
+                    alpha: 0.3,
+                    yoyo: true,
+                    repeat: -1,
+                    duration: 200
+                });
+
+                if (this.feverTimer) {
+                    this.time.removeEvent(this.feverTimer);
+                }
+
+                this.feverTimer = this.time.delayedCall(
+                    this.feverDuration,
+                    () => {
+                        this.feverActive = false;
+                        this.feverGauge.alpha = 1;
+                        this.tweens.killTweensOf(this.feverGauge);
+                        this.feverFlow.visible = false;
+                        this.tweens.killTweensOf(this.feverFlow);
+                        this.updateFeverGauge(); // 通常色に戻す
+                    }
+                );
+            }
+
+
+            updateFeverGauge() {
+                const ratio = Phaser.Math.Clamp(
+                    this.feverCounter / this.feverThreshold,
+                    0,
+                    1
+                );
+
+                this.feverGauge.width = this.feverGaugeWidth * ratio;
+
+                // フィーバー中演出
+                if (this.feverActive) {
+                    this.feverGauge.setFillStyle(0xffdd55);
+                } else {
+                    this.feverGauge.setFillStyle(0xff5555);
+                }
             }
 
         }
