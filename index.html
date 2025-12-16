@@ -7,6 +7,24 @@
 </head>
 
 <body>
+    <div id="myBallSelector" style="
+            position: absolute; 
+            bottom: 50px; 
+            left: 50%; 
+            transform: translateX(-50%);
+            display: flex; 
+            gap: 10px;
+        ">
+        <select id="ballTypeSelect">
+            <option value="red">Red</option>
+            <option value="blue">Blue</option>
+            <option value="orange">Orange</option>
+            <option value="purple">Purple</option>
+        </select>
+        <button onclick="location.reload()">Reload</button>
+    </div>
+
+
     <script type="module">
         import * as Phaser from 'https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.esm.js';
 
@@ -193,7 +211,7 @@
                 super(scene, 0, y, 'enemy');
 
                 this.scene = scene;
-                this.maxHp = 30;
+                this.maxHp = 120;
                 this.hp = this.maxHp;
 
                 this.laneStartX = 10;
@@ -334,6 +352,15 @@
                 this.myBallGauge = this.add.graphics();
 
 
+                const ballTypeSelect = document.getElementById('ballTypeSelect');
+                ballTypeSelect.addEventListener('change', (e) => {
+                    const selectedType = e.target.value;
+                    this.myBallType = selectedType;
+                    this.updateMyBallIcon(); // アイコンも切り替え
+                });
+
+
+
 
                 // UI初期化
                 this.updateUI();
@@ -419,7 +446,7 @@
 
                 this.enemyGroup = this.add.group();
 
-                const enemy = new Enemy(this, 75, 30);
+                const enemy = new Enemy(this, 75, 60); // Time Limit
                 this.enemyGroup.add(enemy);
 
 
