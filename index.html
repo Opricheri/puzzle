@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="utf-8">
+    <title>Matter Box</title>
+</head>
+
+<body>
+    <script type="module">
+        import * as Phaser from 'https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.esm.js';
+
+        const settings = {
+            properties: {
+                scoreVal: 1
+            }
+        }
+        const data = settings.properties;
+
+        const GAME_WIDTH = 300;
+        const GAME_HEIGHT = 550;
+        const UI_HEIGHT = 150;
+
+        let score = 0; // スコア
+        let myBallCount = 0; // My Ball
+
+        class DragSelect {
+            constructor(scene, group, offset = 5, triggerCount = 3) {
+                this.scene = scene;
+                this.group = group;
+                this.offset = offset;
+                this.active = false;
+                this.selected = new Set();
+                this.onReleaseCallback = null;
+                this.triggerCount = triggerCount;
+
+                scene.input.on('pointerdown', () => {
+                    this.active = true;
+                    this.selected.clear();
+                });
+
+                scene.input.on('pointerup', () => {
+                    this.active = false;
+
+                    if (this.graphics) {
+                        this.graphics.clear();
+                    }
+
+                    if (this.onReleaseCallback) {
+                        if (this.triggerCount === null || this.selected.size >= this.triggerCount) {
+                            this.onReleaseCallback(this.selected);
+                        }
+                    }
+                });
+            }
+
+            update() {
+                if (!this.active) return;
+
+                const p = this.scene.input.activePointer;
+                const selectedArray = [...this.selected];
+
+                let last = selectedArray[selectedArray.length - 1];
+
+                this.group.children.iterate(obj => {
+                    const body = obj.body;
+                    const x = body.position.x;
+                    const y = body.position.y;
+                    const radius = obj.displayWidth / 2;
+                    const circle = new Phaser.Geom.Circle(x, y, radius);
+
+                    if (!Phaser.Geom.Circle.Contains(circle, p.worldX, p.worldY)) return;
+
+                    const indexInSelected = selectedArray.indexOf(obj);
+
+                    if (indexInSelected !== -1) {
+                        // 選択済みのボールに戻った場合、そのボール以降をすべて選択解除
+                        const toRemove = selectedArray.slice(indexInSelected + 1);
+                        toRemove.forEach(ball => this.selected.delete(ball));
+                        return;
+                    }
+
+                    if (this.selected.size === 0) {
+                        this.selected.add(obj);
+                        return;
+                    }
+
+                    // last に対してのみ距離判定
+                    const dx = obj.x - last.x;
+                    const dy = obj.y - last.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    const threshold = (obj.displayWidth + last.displayWidth) / 2 + this.offset;
+
+                    if (obj.type === last.type && distance <= threshold) {
+                        this.selected.add(obj);
+                    }
+                });
+
+                // --- チェインライン描画 ---
+                if (this.graphics) {
+                    this.graphics.clear();
+
+                    if (this.selected.size >= 2) {
+                        this.graphics.lineStyle(2, 0xc6ecff, 0.9);
+
+                        const points = [...this.selected];
+
+                        this.graphics.fillStyle(0xc6ecff, 0.6);
+                        points.forEach(p => {
+                            this.graphics.fillCircle(p.x, p.y, 5);
+                        });
+
+                        this.graphics.beginPath();
+                        this.graphics.moveTo(points[0].x, points[0].y);
+
+                        for (let i = 1; i < points.length; i++) {
+                            this.graphics.lineTo(points[i].x, points[i].y);
+                        }
+
+                        this.graphics.strokePath();
+                    }
+                }
+            }
+
+            onRelease(callback) {
+                this.onReleaseCallback = callback;
+            }
+        }
+
+        class Ball extends Phaser.Physics.Matter.Image {
+            constructor(scene, x, y, type, scale = 0.9) {
+                super(scene.matter.world, x, y, 'ball-' + type);
+                scene.add.existing(this);
+
+                this.type = type;
+
+                const baseRadius = this.width / 2; // 元画像サイズ
+                const radius = baseRadius * scale;
+
+                // 丸い物理ボディ
+                this.setScale(scale);
+                this.setCircle(radius);
+                this.setBounce(0.8);
+                this.setFriction(0.01);
+            }
+        }
+
+        class BombItem extends Phaser.Physics.Matter.Image {
+            constructor(scene, x, y) {
+                super(scene.matter.world, x, y, 'item-bomb');
+                scene.add.existing(this);
+
+                this.setScale(1.1);
+                this.setCircle(this.displayWidth / 2);
+
+                this.setBounce(0.8);
+                this.setFriction(0.01);
+                this.isItem = true;
+
+                this.setInteractive({ useHandCursor: true });
+
+                this.on('pointerdown', () => {
+                    scene.explodeBomb(this);
+                });
+            }
+        }
+
+        class TimeItem extends Phaser.Physics.Matter.Image {
+            constructor(scene, x, y, timeAmount = 5) {
+                super(scene.matter.world, x, y, 'item-clock');
+                scene.add.existing(this);
+
+                this.setScale(1.1);
+                this.setCircle(this.displayWidth / 2);
+
+                this.setBounce(0.8);
+                this.setFriction(0.01);
+                this.timeAmount = timeAmount; // 追加時間
+
+                this.setInteractive({ useHandCursor: true });
+
+                this.on('pointerdown', () => {
+                    scene.timeBomb(this.timeAmount); // クリックで時間追加
+                    scene.itemGroup.remove(this, true, true);
+                    this.destroy();
+                });
+            }
+        }
+
+
+        class Enemy extends Phaser.GameObjects.Image {
+            constructor(scene, y, duration = 10) {
+                super(scene, 0, y, 'enemy');
+
+                this.scene = scene;
+                this.maxHp = 30;
+                this.hp = this.maxHp;
+
+                this.laneStartX = 10;
+                this.laneWidth = 220;
+                this.laneEndX = this.laneStartX + this.laneWidth;
+
+                this.duration = duration;      // 通常の上限時間
+                this.elapsedTime = 0;
+                this.allowOverTime = false;
+
+                scene.add.existing(this);
+            }
+
+            damage(amount) {
+                this.hp -= amount;
+                if (this.hp <= 0) {
+                    this.hp = 0;
+                    this.scene.onEnemyDefeated(this);
+                }
+            }
+
+            update(time, delta) {
+                this.elapsedTime += delta / 1000;
+
+                let progress = this.elapsedTime / this.duration;
+
+                if (!this.allowOverTime) {
+                    progress = Phaser.Math.Clamp(progress, 0, 1);
+                }
+
+                this.x = this.laneStartX + (this.laneEndX - this.laneStartX) * progress;
+            }
+
+            getRemainingTime() {
+                return Math.max(0, this.duration - this.elapsedTime);
+            }
+
+            isTimeout() {
+                if (this.allowOverTime) return false;
+                return this.elapsedTime >= this.duration;
+            }
+        }
+
+
+        class MainScene extends Phaser.Scene {
+            preload() {
+                // ボール画像
+                this.load.image('ball-red', './img/hamburger-red.png');
+                this.load.image('ball-blue', './img/hamburger-blue.png');
+                this.load.image('ball-orange', './img/hamburger-orange.png');
+                this.load.image('ball-purple', './img/hamburger-purple.png');
+                this.load.image('enemy', './img/grimReaper.png');
+                this.load.image('church', './img/church.png');
+                this.load.image('item-bomb', './img/bomb.png');
+                this.load.image('item-clock', './img/clock.png');
+            }
+
+            create() {
+                this.gameOffsetY = UI_HEIGHT;
+
+                this.myBallType = 'blue';
+                this.myBallMax = 3;
+                this.myBallGaugeFull = false;
+
+                const width = 300;
+                const height = 280;
+                const offsetY = this.gameOffsetY;
+                this.wallThickness = 20;
+
+                // 壁と床を Matter.js の静的ボディとして作成
+                const wallColor = 0xfcba03;
+                const roof = this.add.rectangle(width / 2, height - 120, width, this.wallThickness, wallColor);
+                this.matter.add.gameObject(roof, { isStatic: true });
+                const wallLeft = this.add.rectangle(this.wallThickness / 2, height / 2 + offsetY, this.wallThickness, height, wallColor);
+                this.matter.add.gameObject(wallLeft, { isStatic: true });
+                const wallRight = this.add.rectangle(width - this.wallThickness / 2, height / 2 + offsetY, this.wallThickness, height, wallColor);
+                this.matter.add.gameObject(wallRight, { isStatic: true });
+                const floor = this.add.rectangle(width / 2, height + offsetY, width, this.wallThickness, wallColor);
+                this.matter.add.gameObject(floor, { isStatic: true });
+
+
+                // For Tower Defense
+                this.add.rectangle(100, 75, 225, 150, 0xada6a6);
+                this.add.rectangle(260, 75, 85, 150, 0xada6a6);
+                this.add.image(260, 75, 'church');
+                this.timeCircle = this.add.circle(150, 180, 24)
+                    .setStrokeStyle(2, 0x000000)
+                    .setFillStyle(0xffffff, 0);
+
+                this.timeLimitText = this.add.text(150, 180, '10', {
+                    fontSize: '24px',
+                    color: '#ffffff',
+                    stroke: '#000',
+                    strokeThickness: 2,
+                }).setOrigin(0.5);
+
+
+                this.enemyHpText = this.add.text(10, 125, '', {
+                    fontSize: '14px',
+                    fill: '#ff5656',
+                    backgroundColor: '#fff',
+                    padding: {
+                        x: 6,
+                        y: 4
+                    }
+                });
+
+                this.scoreText = this.add.text(10, 10, '', { fontSize: '16px', fill: '#000', backgroundColor: '#fff' });
+
+
+                // My Ball UI
+                this.myBallGaugeX = 50;
+                this.myBallGaugeY = 500;
+                this.myBallGaugeRadius = 22;
+
+                this.myBallIcon = this.add.image(
+                    this.myBallGaugeX,
+                    this.myBallGaugeY,
+                    'ball-' + this.myBallType
+                );
+                this.myBallIcon.setScale(0.7).setDepth(2).setAlpha(0.95);
+
+                // My Ball Icon をクリック可能に
+                this.myBallIcon.setInteractive({ useHandCursor: true });
+                this.myBallIcon.on('pointerdown', () => {
+                    this.useMyBallItem();
+                });
+
+
+                this.myBallGaugeBg = this.add.graphics();
+                this.myBallGaugeBg.lineStyle(4, 0x444444, 1);
+                this.myBallGaugeBg.strokeCircle(
+                    this.myBallGaugeX,
+                    this.myBallGaugeY,
+                    this.myBallGaugeRadius
+                );
+
+                this.myBallGauge = this.add.graphics();
+
+
+
+                // UI初期化
+                this.updateUI();
+
+
+                const buttonWidth = 40;
+                const buttonHeight = 40;
+                const shuffleButtonWrapper = this.add.rectangle(
+                    width - buttonWidth / 2 - 10,  // 右端から少し内側
+                    height - buttonHeight / 2 - 10 + offsetY, // 下端から少し内側
+                    buttonWidth,
+                    buttonHeight,
+                    wallColor // ボタンの色
+                );
+                this.matter.add.gameObject(shuffleButtonWrapper, { isStatic: true });
+
+                // ボール生成
+                this.balls = [];
+                this.ballGroup = this.add.group();
+                this.spawnBalls(50, 1, 0, 2); // 最初に50個生成
+
+                // チェイン生成
+                this.chainGraphics = this.add.graphics();
+                this.chainGraphics.setDepth(10);
+
+
+                this.dragSelect = new DragSelect(this, this.ballGroup);
+                this.dragSelect.graphics = this.chainGraphics;
+
+                this.dragSelect.onRelease((selected) => {
+                    const array = [...selected]; // Set → 配列
+
+                    let last = array[array.length - 1];
+
+                    if (array.length >= 6 && last) {
+                        const item = new BombItem(this, last.x, last.y);
+                        this.itemGroup.add(item);
+                    }
+
+                    const damage = array.length * data.scoreVal;
+
+                    array.forEach((ball, i) => {
+                        this.time.delayedCall(150 * i, () => {
+                            if (ball.type === this.myBallType) {
+                                myBallCount++;
+                                this.updateUI();
+                            }
+
+                            this.ballGroup.remove(ball, true, true);
+                            ball.destroy();
+
+                            if (i === array.length - 1) {
+                                this.spawnBalls(array.length);
+                            }
+                        }, null, this);
+                    });
+
+                    score += damage;
+                    this.updateUI();
+
+                    const enemy = this.enemyGroup.getChildren()[0];
+                    if (enemy) {
+                        enemy.damage(damage);
+                    }
+
+
+                    this.dragSelect.selected.clear();
+                });
+
+                this.lastClickTime = 0;
+
+                const shuffleButton = this.add.text(250, 250 + offsetY, '🌀', { font: '32px Arial', fill: '#ffffff' })
+                    .setInteractive({ useHandCursor: true }) // クリック可能にする
+                    .on('pointerdown', () => {
+                        const now = this.time.now; // 現在の時間（ms）
+                        const interval = 5000;      // インターバル 500ms = 0.5秒
+
+                        if (now - this.lastClickTime >= interval) {
+                            this.lastClickTime = now;
+                            this.shuffleBalls(); // 実際の処理
+                        }
+                    });
+
+                this.enemyGroup = this.add.group();
+
+                const enemy = new Enemy(this, 75, 30);
+                this.enemyGroup.add(enemy);
+
+
+                this.itemGroup = this.add.group();
+            }
+
+            updateUI() {
+                this.scoreText.setText(`Score: ${score}`);
+                this.updateMyBallGauge();
+            }
+
+            update(time, delta) {
+                this.dragSelect.update();
+
+                this.ballGroup.children.iterate(ball => {
+                    if (this.dragSelect.selected.has(ball)) {
+                        ball.setTint(0x88ccff);
+                    } else {
+                        ball.clearTint();
+                    }
+                })
+
+                const enemies = this.enemyGroup.getChildren();
+
+                if (enemies.length === 0) {
+                    return;
+                }
+
+                if (enemies.length > 0) {
+                    const enemy = enemies[0]; // 今は1体だけ想定
+                    enemy.update(time, delta);
+
+                    const remain = enemy.getRemainingTime();
+                    this.timeLimitText.setText(
+                        `${remain.toFixed()}`
+                    );
+
+                    this.enemyHpText.setText(
+                        `Enemy HP: ${Math.max(0, enemy.hp)}`
+                    );
+
+                    if (enemy.isTimeout()) {
+                        enemy.destroy();
+
+                        this.time.delayedCall(3000, () => {
+                            this.scene.restart();
+                        })
+                    }
+                }
+            }
+
+            // 任意の数のボールを生成してグループに追加する関数
+            spawnBalls(count = 20, defaultScale = 0.9, uniqueBall = 0, uniqueSize = 1.5) {
+                const wallThickness = this.wallThickness;
+                const offsetY = this.gameOffsetY;
+                const width = 300;
+                const height = 300;
+                const types = ['red', 'blue', 'orange', 'purple'];
+
+                for (let i = 0; i < count; i++) {
+                    const type = types[Phaser.Math.Between(0, types.length - 1)];
+                    const x = Phaser.Math.Between(wallThickness + 25, width - wallThickness - 25);
+                    const y = Phaser.Math.Between(25 + offsetY, height / 2 + offsetY);
+
+                    const scale = i < uniqueBall ? uniqueSize : defaultScale;
+                    const ball = new Ball(this, x, y, type, scale);
+
+                    this.balls.push(ball);
+                    this.ballGroup.add(ball);
+                }
+            }
+
+            shuffleBalls() {
+                const balls = this.ballGroup.getChildren(); // 全ボール取得
+
+                balls.forEach(ball => {
+                    // 上方向ベクトル + ランダム横ベクトル
+                    const vx = Phaser.Math.Between(-10, 10); // 左右にランダム
+                    const vy = Phaser.Math.Between(-10, -6); // 上方向
+                    ball.setVelocity(vx, vy);
+                });
+            }
+
+            onEnemyDefeated(enemy) {
+                // グループから削除
+                this.enemyGroup.remove(enemy, true, true);
+
+                // UI を確実に更新
+                this.enemyHpText.setText('Enemy HP: 0');
+                this.timeLimitText.setText('Enemy Defeated');
+
+                // 少し待ってからリスタート
+                this.time.delayedCall(3000, () => {
+                    this.scene.restart();
+                });
+            }
+
+            explodeBomb(item) {
+                if (item.exploded) return; // ★ 二重起爆防止
+                item.exploded = true;
+
+                const radius = 40;
+                const balls = this.ballGroup.getChildren();
+                const items = this.itemGroup.getChildren();
+
+                let deletedCount = 0;
+
+                // --- ボール破壊 ---
+                balls.forEach(ball => {
+                    const dx = ball.x - item.x;
+                    const dy = ball.y - item.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist <= radius) {
+                        if (ball.type === this.myBallType) {
+                            myBallCount++;
+                        }
+
+                        this.ballGroup.remove(ball, true, true);
+                        ball.destroy();
+                        deletedCount++;
+                    }
+                });
+
+                // --- ダメージ計算 ---
+                const damage = deletedCount * data.scoreVal;
+
+                const bonusTable = {
+                    1: 1.0,
+                    2: 1.1,
+                    3: 1.25,
+                    4: 1.4,
+                    5: 1.6,
+                    6: 2.0
+                };
+
+                const bonus = bonusTable[deletedCount] ?? 1.0;
+                const scoreGain = Math.floor(damage * bonus);
+                score += scoreGain;
+                this.updateUI();
+
+                // --- 敵ダメージ ---
+                const enemy = this.enemyGroup.getChildren()[0];
+                if (enemy) {
+                    enemy.damage(damage);
+                }
+
+                // --- 補充 ---
+                this.spawnBalls(deletedCount);
+
+                // --- 💣 他の爆弾を起爆 ---
+                items.forEach(other => {
+                    if (other === item) return;
+                    if (other.exploded) return;
+
+                    const dx = other.x - item.x;
+                    const dy = other.y - item.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist <= radius) {
+                        // 少し遅らせると安全
+                        this.time.delayedCall(0, () => {
+                            this.explodeBomb(other);
+                        });
+                    }
+                });
+
+                // --- 演出 ---
+                this.cameras.main.shake(200, 0.015);
+
+                // --- 自分を消す ---
+                this.itemGroup.remove(item, true, true);
+                item.destroy();
+            }
+
+            timeBomb(extraTime) {
+                const enemy = this.enemyGroup.getChildren()[0];
+                if (enemy) {
+                    enemy.duration += extraTime;
+                    this.updateUI();
+                }
+            }
+
+            resizeBall(ball, newScale) {
+                const baseRadius = ball.width / 2;
+                const radius = baseRadius * newScale;
+
+                ball.setScale(newScale);
+
+                // 物理ボディを作り直す
+                ball.setCircle(radius);
+            }
+
+            // 色で全選択: this.selectByType('red');
+            selectByType(type) {
+                this.dragSelect.selected.clear();
+
+                this.ballGroup.children.iterate(ball => {
+                    if (ball.type === type) {
+                        this.dragSelect.selected.add(ball);
+                    }
+                })
+            }
+
+            updateMyBallGauge() {
+                const ratio = Phaser.Math.Clamp(
+                    myBallCount / this.myBallMax,
+                    0,
+                    1
+                );
+
+                this.myBallGauge.clear();
+
+                this.myBallGauge.lineStyle(4, 0xffcc00, 1);
+                this.myBallGauge.beginPath();
+
+                // -90度スタート（上から）
+                this.myBallGauge.arc(
+                    this.myBallGaugeX,
+                    this.myBallGaugeY,
+                    this.myBallGaugeRadius,
+                    Phaser.Math.DegToRad(-90),
+                    Phaser.Math.DegToRad(-90 + 360 * ratio),
+                    false
+                );
+
+                this.myBallGauge.strokePath();
+
+                // ゲージMaxでアニメーション
+                if (ratio >= 1 && !this.myBallGaugeFull) {
+                    this.myBallGaugeFull = true;
+                    this.playMyBallFullAnimation();
+                }
+
+                // ★ 減ったらリセット
+                if (ratio < 1) {
+                    this.myBallGaugeFull = false;
+                }
+            }
+
+            updateMyBallIcon() {
+                this.myBallIcon.setTexture('ball-' + this.myBallType);
+            }
+
+            playMyBallFullAnimation() {
+
+                // ゲージ波紋
+                const ring = this.add.circle(
+                    this.myBallGaugeX,
+                    this.myBallGaugeY,
+                    this.myBallGaugeRadius,
+                    0xffcc00,
+                    0
+                ).setStrokeStyle(3, 0xffcc00);
+
+                this.tweens.add({
+                    targets: ring,
+                    scale: 1.6,
+                    alpha: 0,
+                    duration: 500,
+                    ease: 'Cubic.Out',
+                    onComplete: () => ring.destroy()
+                });
+
+                // アイコンポップ
+                this.tweens.add({
+                    targets: this.myBallIcon,
+                    scale: 0.85,
+                    yoyo: true,
+                    duration: 120,
+                    repeat: 1,
+                    ease: 'Back.Out'
+                });
+            }
+
+            useMyBallItem() {
+                if (!this.myBallGaugeFull) return; // フルじゃなければ何もしない
+
+                // 効果をボールタイプごとに切り替え
+                const effects = {
+                    red: () => {
+                        const bomb = new BombItem(this, 150, 300);
+                        this.itemGroup.add(bomb);
+                    },
+                    blue: () => {
+                        const timeItem = new TimeItem(this, 150, 300, 5);
+                        this.itemGroup.add(timeItem);
+                    },
+                    orange: () => {
+                        score += 50;
+                        this.updateUI();
+                    },
+                    purple: () => {
+                        const enemy = this.enemyGroup.getChildren()[0];
+                        if (enemy) enemy.damage(20);
+                    }
+                };
+
+                const effect = effects[this.myBallType];
+                if (effect) effect();
+
+                myBallCount -= this.myBallMax;
+                if (myBallCount < 0) myBallCount = 0;
+
+                this.myBallGaugeFull = false;
+                this.updateMyBallGauge();
+            }
+
+        }
+
+
+        new Phaser.Game({
+            type: Phaser.AUTO,
+
+            width: GAME_WIDTH,
+            height: GAME_HEIGHT,
+            backgroundColor: "#3b3a3d",
+
+            resolution: window.devicePixelRatio,
+
+            scale: {
+                mode: Phaser.Scale.FIT,
+                autoCenter: Phaser.Scale.CENTER_BOTH,
+            },
+
+            scene: MainScene,
+
+            physics: {
+                default: 'matter',
+                matter: {
+                    gravity: { y: 1 },
+                    debug: false
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>
