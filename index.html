@@ -3,40 +3,26 @@
 
 <head>
     <meta charset="utf-8">
-    <title>Matter Box</title>
+    <title>Puzzle</title>
 </head>
 
 <body>
-    <div id="myBallSelector" style="
-            position: absolute; 
-            bottom: 20px; 
-            left: 50%; 
-            transform: translateX(-50%);
-            display: flex; 
-            gap: 10px;
-        ">
-        <select id="ballTypeSelect">
-            <option value="red">Red</option>
-            <option value="blue">Blue</option>
-            <option value="orange">Orange</option>
-            <option value="purple">Purple</option>
-        </select>
-        <button onclick="location.reload()">Reload</button>
-    </div>
-
-
     <script type="module">
         import * as Phaser from 'https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.esm.js';
 
         const settings = {
             properties: {
                 scoreVal: 10,
-                myBallType: 'purple',
+                myBallType: 'red',
 
-                enemyProps: {
-                    maxHp: 1200, // 体力
-                    enemyDuration: 60, // 制限時間
-                },
+                waves: [
+                    { type: 'grimReaper', hp: 1200, duration: 60 },
+                    { type: 'grimReaper', hp: 1500, duration: 60 },
+                    { type: 'grimReaper', hp: 2000, duration: 60 },
+                    { type: 'grimReaper', hp: 2500, duration: 60 },
+                    { type: 'grimReaper', hp: 3000, duration: 90 },
+                    { type: 'grimReaper', hp: 3500, duration: 90 },
+                ],
 
                 feverProps: {
                     feverMultiplier: 3, // 倍率
@@ -65,9 +51,11 @@
                 this.onReleaseCallback = null;
                 this.triggerCount = triggerCount;
 
-                scene.input.on('pointerdown', () => {
-                    this.active = true;
-                    this.selected.clear();
+                scene.input.on('pointerdown', (pointer) => {
+                    if (pointer.isDown) {
+                        this.active = true;
+                        this.selected.clear();
+                    }
                 });
 
                 scene.input.on('pointerup', () => {
@@ -86,7 +74,7 @@
             }
 
             update() {
-                if (!this.active) return;
+                if (!this.active || !this.scene.dragEnabled) return;
 
                 const p = this.scene.input.activePointer;
                 const selectedArray = [...this.selected];
@@ -248,7 +236,7 @@
                 super(scene, 0, y, 'enemy');
 
                 this.scene = scene;
-                this.maxHp = data.enemyProps.maxHp;
+                this.maxHp = 100;
                 this.hp = this.maxHp;
 
                 this.laneStartX = 10;
@@ -294,6 +282,11 @@
 
 
         class MainScene extends Phaser.Scene {
+            constructor() {
+                super({ key: 'MainScene' });
+                this.dragEnabled = true;
+            }
+
             preload() {
                 // ボール画像
                 this.load.image('ball-red', './img/hamburger-red.png');
@@ -391,14 +384,6 @@
 
                 this.myBallGauge = this.add.graphics();
 
-
-                const ballTypeSelect = document.getElementById('ballTypeSelect');
-                ballTypeSelect.addEventListener('change', (e) => {
-                    const selectedType = e.target.value;
-                    this.myBallType = selectedType;
-                    this.updateMyBallIcon(); // アイコンも切り替え
-                });
-
                 // フィーバーUI
 
                 this.feverGaugeX = 80;
@@ -473,6 +458,17 @@
                 this.purpleMode = false;
 
 
+                // Wave系
+                this.currentWaveIndex = 0;
+                this.waves = data.waves;
+
+
+                // Score系
+                this.canScore = true;
+                this.isCleared = false;
+
+
+
 
                 this.feverActive = false;
                 this.feverMultiplier = data.feverProps.feverMultiplier;
@@ -486,6 +482,8 @@
                 this.dragSelect.graphics = this.chainGraphics;
 
                 this.dragSelect.onRelease((selected) => {
+                    if (this.isCleared) return;
+
                     const array = [...selected]; // Set → 配列
 
                     let last = array[array.length - 1];
@@ -504,6 +502,7 @@
                     array.forEach((ball, i) => {
                         this.time.delayedCall(150 * i, () => {
                             if (ball.isJammer && !this.purpleMode) return;
+                            if (this.isCleared) return;
 
                             if (ball.type === this.myBallType) {
                                 myBallCount++;
@@ -523,8 +522,10 @@
                         }, null, this);
                     });
 
-                    score += damage;
-                    this.updateUI();
+                    if (this.canScore) {
+                        score += damage;
+                        this.updateUI();
+                    }
 
                     const enemy = this.enemyGroup.getChildren()[0];
                     if (enemy) {
@@ -551,9 +552,7 @@
 
                 this.enemyGroup = this.add.group();
 
-                const enemy = new Enemy(this, 75, data.enemyProps.enemyDuration); // Time Limit
-                this.enemyGroup.add(enemy);
-
+                this.spawnEnemy();
 
                 this.itemGroup = this.add.group();
             }
@@ -598,12 +597,12 @@
                         `Enemy HP: ${Math.max(0, enemy.hp)}`
                     );
 
+                    // 時間切れでゲームオーバー
                     if (enemy.isTimeout()) {
-                        enemy.destroy();
+                        this.enemyGroup.remove(enemy, true, true);
 
-                        this.time.delayedCall(3000, () => {
-                            this.scene.restart();
-                        })
+                        // GAME OVER テキスト
+                        this.showGameOverText();
                     }
                 }
 
@@ -651,21 +650,9 @@
                 });
             }
 
-            onEnemyDefeated(enemy) {
-                // グループから削除
-                this.enemyGroup.remove(enemy, true, true);
-
-                // UI を確実に更新
-                this.enemyHpText.setText('Enemy HP: 0');
-                this.timeLimitText.setText('Enemy Defeated');
-
-                // 少し待ってからリスタート
-                this.time.delayedCall(3000, () => {
-                    this.scene.restart();
-                });
-            }
-
             explodeBomb(item) {
+                if (this.isCleared) return;
+
                 if (item.exploded) return; // ★ 二重起爆防止
                 item.exploded = true;
 
@@ -677,6 +664,7 @@
 
                 // --- ボール破壊 ---
                 balls.forEach(ball => {
+                    if (this.isCleared) return;
                     const dx = ball.x - item.x;
                     const dy = ball.y - item.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -897,6 +885,7 @@
 
 
             destroySingleBall(ball) {
+                if (this.isCleared) return;
                 if (!ball.active) return;
                 if (ball.isJammer && !this.purpleMode) return;
 
@@ -914,8 +903,10 @@
                 const damage = data.scoreVal *
                     (this.feverActive ? this.feverMultiplier : 1);
 
-                score += damage;
-                this.updateUI();
+                if (this.canScore) {
+                    score += damage;
+                    this.updateUI();
+                }
 
                 // 敵ダメージ
                 const enemy = this.enemyGroup.getChildren()[0];
@@ -1055,7 +1046,329 @@
                 }
             }
 
+
+            // Enemy系
+            spawnEnemy() {
+                // 全ウェーブ終了でリスタート
+                if (this.currentWaveIndex >= this.waves.length) {
+                    this.showClearText();
+                    this.time.delayedCall(5000, () => {
+                        this.scene.restart();
+                    })
+                    return;
+                }
+
+                this.showWaveText(this.currentWaveIndex + 1); // Waveテキスト表示
+
+                const waveData = this.waves[this.currentWaveIndex];
+                const enemy = new Enemy(this, 75, waveData.duration);
+                enemy.maxHp = waveData.hp;
+                enemy.hp = waveData.hp;
+                this.enemyGroup.add(enemy);
+            }
+
+            onEnemyDefeated(enemy) {
+                this.dragEnabled = false;
+                this.enemyGroup.remove(enemy, true, true);
+                this.enemyHpText.setText('Enemy HP: 0');
+                this.timeLimitText.setText('');
+
+
+                if (this.currentWaveIndex >= this.waves.length) {
+                    this.isCleared = true;
+                    this.showClearText();
+                    return;
+                }
+
+                this.canScore = false;
+
+                this.currentWaveIndex++;
+
+                this.time.delayedCall(2000, () => {
+                    this.canScore = true;
+                    this.spawnEnemy();
+                    this.dragEnabled = true;
+                });
+            }
+
+            showWaveText(waveNumber) {
+                const text = this.add.text(
+                    this.cameras.main.centerX,
+                    this.cameras.main.centerY,
+                    `Wave ${waveNumber}`,
+                    {
+                        fontSize: '32px',
+                        color: '#ffffff',
+                        fontStyle: 'bold',
+                        stroke: '#000000',
+                        strokeThickness: 4
+                    }
+                ).setOrigin(0.5).setAlpha(0).setScale(0.8);
+
+                // フェードイン
+                this.tweens.add({
+                    targets: text,
+                    alpha: 1,
+                    scale: 1.2,
+                    duration: 400,
+                    ease: 'Cubic.Out',
+                    onComplete: () => {
+                        // 少し止める
+                        this.time.delayedCall(400, () => {
+                            // フェードアウト
+                            this.tweens.add({
+                                targets: text,
+                                alpha: 0,
+                                scale: 0.8,
+                                duration: 400,
+                                ease: 'Cubic.In',
+                                onComplete: () => text.destroy()
+                            });
+                        });
+                    }
+                });
+            }
+
+            showClearText() {
+                this.isCleared = true;
+                const text = this.add.text(
+                    this.cameras.main.centerX,
+                    this.cameras.main.centerY,
+                    'CLEAR!!',
+                    {
+                        fontSize: '32px',
+                        color: '#ffff66',
+                        fontStyle: 'bold',
+                        stroke: '#ff6600',
+                        strokeThickness: 6
+                    }
+                ).setOrigin(0.5).setAlpha(0).setScale(0.5);
+
+                // 拡大しながらフェードイン
+                this.tweens.add({
+                    targets: text,
+                    alpha: 1,
+                    scale: 1.2,
+                    duration: 500,
+                    ease: 'Back.Out',
+                    onComplete: () => {
+                        // 少し止める
+                        this.time.delayedCall(800, () => {
+                            // フェードアウト
+                            this.tweens.add({
+                                targets: text,
+                                alpha: 0,
+                                scale: 1.5,
+                                duration: 500,
+                                ease: 'Cubic.In',
+                                onComplete: () => {
+                                    const finalScore = score;
+                                    text.destroy();
+                                    score = 0;
+                                    myBallCount = 0;
+                                    this.time.delayedCall(500, () => {
+                                        this.scene.start('ClearScene', { score: finalScore });
+                                    });
+                                }
+                            });
+                        });
+                    }
+                });
+            }
+
+            showGameOverText() {
+                const text = this.add.text(
+                    this.cameras.main.centerX,
+                    this.cameras.main.centerY,
+                    'GAME OVER',
+                    {
+                        fontSize: '32px',
+                        color: '#ff4444',
+                        fontStyle: 'bold',
+                        stroke: '#000000',
+                        strokeThickness: 6
+                    }
+                ).setOrigin(0.5).setAlpha(0).setScale(0.5);
+
+                // フェードイン＆拡大
+                this.tweens.add({
+                    targets: text,
+                    alpha: 1,
+                    scale: 1.2,
+                    duration: 500,
+                    ease: 'Back.Out',
+                    onComplete: () => {
+                        this.time.delayedCall(500, () => {
+                            const finalScore = score;
+                            text.destroy();
+                            score = 0;
+                            myBallCount = 0;
+                            this.time.delayedCall(500, () => {
+                                this.scene.start('GameOverScene', { score: finalScore });
+                            });
+                        });
+                    }
+                });
+            }
+
         }
+
+
+        class TitleScene extends Phaser.Scene {
+            constructor() {
+                super({ key: 'TitleScene' });
+            }
+
+            preload() {
+                this.load.image('ball-red', './img/hamburger-red.png');
+                this.load.image('ball-blue', './img/hamburger-blue.png');
+                this.load.image('ball-orange', './img/hamburger-orange.png');
+                this.load.image('ball-purple', './img/hamburger-purple.png');
+                this.load.image('button', './img/button.png'); // 任意のボタン画像
+            }
+
+            create() {
+                this.selectedBall = 'red'; // 初期値
+
+                // タイトルテキスト
+                this.add.text(150, 150, 'Ball×Ball', {
+                    fontSize: '32px',
+                    color: '#ffffff'
+                }).setOrigin(0.5);
+
+                // Ballセレクト用ボタン（画像をクリックで選択）
+                const types = ['red', 'blue', 'orange', 'purple'];
+                this.selectedBall = 'red';
+                types.forEach((type, index) => {
+                    const ball = this.add.image(80 + index * 50, 250, 'ball-' + type)
+                        .setInteractive({ useHandCursor: true })
+                        .setScale(0.8);
+
+                    ball.on('pointerdown', () => {
+                        this.selectedBall = type;
+                        // 選択視覚化
+                        types.forEach(t => {
+                            const b = this.children.getByName(t);
+                            if (b) b.setTint(t === type ? 0xffffff : 0x846301);
+                        });
+                    });
+
+                    ball.setName(type);
+                });
+
+                // Battle開始ボタン
+                const button = this.add.text(155, 350, 'Battle Start', {
+                    fontSize: '24px',
+                    backgroundColor: '#fcba03',
+                    color: '#ffffff',
+                    padding: { x: 10, y: 5 }
+                }).setOrigin(0.5)
+                    .setInteractive({ useHandCursor: true });
+
+                button.on('pointerdown', () => {
+                    // 選択したボールを global に渡す
+                    settings.properties.myBallType = this.selectedBall;
+
+                    // MainScene に切り替え
+                    this.scene.start('MainScene');
+                });
+            }
+        }
+
+
+        class ClearScene extends Phaser.Scene {
+            constructor() {
+                super({ key: 'ClearScene' });
+            }
+
+            init(data) {
+                this.finalScore = data.score || 0; // MainScene からスコアを受け取る
+            }
+
+            create() {
+                const centerX = this.cameras.main.centerX;
+                const centerY = this.cameras.main.centerY;
+
+                // 背景
+                this.add.rectangle(centerX, centerY, 300, 550, 0x222222);
+
+                // "CLEAR!!" テキスト
+                this.add.text(centerX, centerY - 100, 'CLEAR!!', {
+                    fontSize: '48px',
+                    color: '#ffff66',
+                    fontStyle: 'bold',
+                    stroke: '#ff6600',
+                    strokeThickness: 6
+                }).setOrigin(0.5);
+
+                // スコア表示
+                this.add.text(centerX, centerY, `Score: ${this.finalScore}`, {
+                    fontSize: '32px',
+                    color: '#ffffff'
+                }).setOrigin(0.5);
+
+                // タイトルに戻るボタン
+                const button = this.add.text(centerX, centerY + 100, 'タイトルに戻る', {
+                    fontSize: '24px',
+                    backgroundColor: '#fcba03',
+                    color: '#000000',
+                    padding: { x: 10, y: 5 }
+                }).setOrigin(0.5)
+                    .setInteractive({ useHandCursor: true });
+
+                button.on('pointerdown', () => {
+                    this.scene.start('TitleScene');
+                });
+            }
+        }
+
+        class GameOverScene extends Phaser.Scene {
+            constructor() {
+                super({ key: 'GameOverScene' });
+            }
+
+            init(data) {
+                this.finalScore = data.score || 0;
+            }
+
+            create() {
+                const centerX = this.cameras.main.centerX;
+                const centerY = this.cameras.main.centerY;
+
+                // 背景
+                this.add.rectangle(centerX, centerY, 300, 550, 0x222222);
+
+                // "GAME OVER" テキスト
+                this.add.text(centerX, centerY - 100, 'GAME OVER', {
+                    fontSize: '48px',
+                    color: '#ff4444',
+                    fontStyle: 'bold',
+                    stroke: '#000000',
+                    strokeThickness: 6
+                }).setOrigin(0.5);
+
+                // スコア表示
+                this.add.text(centerX, centerY, `Score: ${this.finalScore}`, {
+                    fontSize: '32px',
+                    color: '#ffffff'
+                }).setOrigin(0.5);
+
+                // タイトルに戻るボタン
+                const button = this.add.text(centerX, centerY + 100, 'タイトルに戻る', {
+                    fontSize: '24px',
+                    backgroundColor: '#fcba03',
+                    color: '#000000',
+                    padding: { x: 10, y: 5 }
+                }).setOrigin(0.5)
+                    .setInteractive({ useHandCursor: true });
+
+                button.on('pointerdown', () => {
+                    this.scene.start('TitleScene');
+                });
+            }
+        }
+
+
 
 
         new Phaser.Game({
@@ -1072,7 +1385,7 @@
                 autoCenter: Phaser.Scale.CENTER_BOTH,
             },
 
-            scene: MainScene,
+            scene: [TitleScene, MainScene, ClearScene, GameOverScene],
 
             physics: {
                 default: 'matter',
